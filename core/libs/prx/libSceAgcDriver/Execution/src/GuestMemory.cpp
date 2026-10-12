@@ -30,6 +30,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <pthread.h>
+#include <sys/mman.h>
 #else
 #include <cerrno>
 #include <cstdint>
@@ -591,6 +596,38 @@ bool describePages(std::uintptr_t address, std::size_t bytes, Emit&& emit) {
             constexpr auto mask = static_cast<std::uintptr_t>(PageBytes - 1);
             pages.record(cursor & ~mask, (next + mask) & ~mask, readable, writable, generation, access);
         };
+#ifdef __APPLE__
+        auto regionBase = static_cast<mach_vm_address_t>(cursor);
+        mach_vm_size_t regionSize = 0;
+        vm_region_basic_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        const auto result = mach_vm_region(mach_task_self(), &regionBase, &regionSize, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+        if (result == KERN_INVALID_ADDRESS) {
+            static_cast<void>(emit(PageRun{cursor, end, false, false}));
+            return true;
+        }
+        if (result != KERN_SUCCESS || regionSize == 0) return false;
+        if (regionBase > cursor) {
+            const auto gapEnd = std::min<std::uintptr_t>(end, regionBase);
+            recordRun(gapEnd, false, false);
+            if (!emit(PageRun{cursor, gapEnd, false, false})) return true;
+            cursor = gapEnd;
+            continue;
+        }
+        auto next = std::min<std::uintptr_t>(end, regionBase + regionSize);
+        bool readable = (info.protection & VM_PROT_READ) != 0;
+        bool writable = readable && (info.protection & VM_PROT_WRITE) != 0;
+        std::uintptr_t watchedEnd = next;
+        if (const int logical = GuestWriteWatch::GuestWriteWatchProtection_nid_postfix(cursor, next, &watchedEnd); logical >= 0) {
+            next = std::min(next, watchedEnd);
+            readable = (logical & PROT_READ) != 0;
+            writable = readable && (logical & PROT_WRITE) != 0;
+        }
+        recordRun(next, readable, writable);
+        if (!emit(PageRun{cursor, next, readable, writable})) return true;
+        cursor = next;
+#else
         if (const int fd = HostMapping::QueryFd(); fd >= 0) {
             procmap_query query{};
             query.size = sizeof(query);
@@ -653,6 +690,7 @@ bool describePages(std::uintptr_t address, std::size_t bytes, Emit&& emit) {
             return true;
         }
 #endif
+#endif
     }
     return true;
 }
@@ -668,6 +706,9 @@ bool onOwnLiveStack(std::uintptr_t address, std::size_t bytes) {
             GetCurrentThreadStackLimits(&lowLimit, &highLimit);
             low = static_cast<std::uintptr_t>(lowLimit);
             high = static_cast<std::uintptr_t>(highLimit);
+#elif defined(__APPLE__)
+            high = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
+            low = high - pthread_get_stacksize_np(pthread_self());
 #else
             pthread_attr_t attributes;
             if (pthread_getattr_np(pthread_self(), &attributes) != 0) return;
