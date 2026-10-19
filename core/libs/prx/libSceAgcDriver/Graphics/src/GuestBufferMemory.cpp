@@ -4363,15 +4363,19 @@ void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool ad
         recorder->FlushKeyStoresOverlapping(region->begin, static_cast<std::size_t>(region->end - region->begin));
         recorder->FlushStoresOverlapping(region->begin, static_cast<std::size_t>(region->end - region->begin));
     }
-    const auto commands = recorder->Commands();
+    VkAccessFlags covered = 0;
+    const auto commands = recorder->Commands(&covered);
     const auto timing = recorder->BeginGpuTiming(StagingCopyInKey);
     if (Recorder::BarrierValidate()) {
         std::vector<std::pair<std::uint64_t, std::uint64_t>> reads;
         for (const auto* region : copies) reads.emplace_back(region->begin, region->end);
         recorder->NoteAccess(Recorder::CommandClass::StagingIn, Recorder::Access{reads, {}, {}, VK_PIPELINE_STAGE_TRANSFER_BIT});
     }
-    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    Recorder::CountBarriers(Recorder::CommandClass::StagingIn);
+    constexpr BarrierMask leading{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+    if (!Recorder::ElideCovered(Recorder::CommandClass::StagingIn, leading, covered)) {
+        RecordMemoryBarrier(context, commands, leading.srcStage, leading.dstStage, leading.srcAccess, leading.dstAccess);
+        Recorder::CountBarriers(Recorder::CommandClass::StagingIn);
+    }
     bool stagedAny = false;
     std::uint64_t copiedBytes = 0;
     for (auto* region : copies) {
@@ -4482,11 +4486,15 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
             const auto to = std::min(end, region.end);
             if (from >= to) continue;
             if (!recording) {
-                commands = recorder.Commands();
+                VkAccessFlags covered = 0;
+                commands = recorder.Commands(&covered);
                 timing = recorder.BeginGpuTiming(StagingCopyBackKey);
                 // The shader's stores into the buffer (whichever stage made them) precede the copy.
-                RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-                Recorder::CountBarriers(Recorder::CommandClass::StagingOut);
+                constexpr BarrierMask leading{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+                if (!Recorder::ElideCovered(Recorder::CommandClass::StagingOut, leading, covered)) {
+                    RecordMemoryBarrier(context, commands, leading.srcStage, leading.dstStage, leading.srcAccess, leading.dstAccess);
+                    Recorder::CountBarriers(Recorder::CommandClass::StagingOut);
+                }
                 recording = true;
             }
             // Exactly the sub-range the shader may write, in place in the import: what the shader
@@ -4963,9 +4971,9 @@ std::uint64_t GuestBufferMemory::inPlaceEnd(const Region& region) {
     return region.direct != nullptr && region.runCut ? std::min(region.end, region.direct->base + region.direct->bytes) : region.end;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::InPlaceReads() const {
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
-    if (!uploaded || committed) return result;
+void GuestBufferMemory::InPlaceReads(std::vector<std::pair<std::uint64_t, std::uint64_t>>& result) const {
+    result.clear();
+    if (!uploaded || committed) return;
     if (space != nullptr) {
         for (const auto& region : space->base) {
             if (region.direct != nullptr) result.emplace_back(region.begin, region.end);
@@ -4974,6 +4982,11 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::InPlaceR
     for (const auto& region : regions) {
         if (region.direct != nullptr) result.emplace_back(region.begin, inPlaceEnd(region));
     }
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::InPlaceReads() const {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+    InPlaceReads(result);
     return result;
 }
 
@@ -4986,9 +4999,9 @@ std::optional<GuestBufferMemory::SplitReads> GuestBufferMemory::SplitInPlaceRead
     return split;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::DeviceReads() const {
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
-    if (!uploaded || committed) return result;
+void GuestBufferMemory::DeviceReads(std::vector<std::pair<std::uint64_t, std::uint64_t>>& result) const {
+    result.clear();
+    if (!uploaded || committed) return;
     if (space != nullptr) {
         for (const auto& region : space->base) {
             if (region.direct != nullptr || region.mirror != nullptr) result.emplace_back(region.begin, region.end);
@@ -4997,6 +5010,11 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::DeviceRe
     for (const auto& region : regions) {
         if (region.direct != nullptr || region.mirror != nullptr) result.emplace_back(region.begin, region.end);
     }
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::DeviceReads() const {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+    DeviceReads(result);
     return result;
 }
 
