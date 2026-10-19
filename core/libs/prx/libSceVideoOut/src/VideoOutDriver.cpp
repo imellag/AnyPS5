@@ -689,7 +689,7 @@ void VideoOutDriver::presentLoop(std::stop_token token, std::promise<void>& star
                         imeTextInput->HandleEvent(event, SDL_GetWindowID(window.Handle()));
                     }
                 }
-                padInput->Update();
+                padInput->Update(window);
                 updateDisplayRefreshRate();
                 return false;
             });
