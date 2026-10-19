@@ -1255,12 +1255,14 @@ int DoMprotect(const void* addr, size_t len, int prot) {
 #ifdef _WIN32
         if (nativeProtection != PROT_NONE && hostStack) CommitReservedPages(insidePointer, insideBytes);
         const bool protectedPages = mprotect(insidePointer, insideBytes, nativeProtection) == 0;
-#else
+#elif defined(__linux__)
         bool protectedPages = mprotect(insidePointer, insideBytes, nativeProtection) == 0;
         if (!protectedPages && errno == ENOMEM) {
             MapUnmappedPages(insidePointer, static_cast<std::size_t>((stackEnd & ~hostPageMask) - inside));
             protectedPages = mprotect(insidePointer, insideBytes, nativeProtection) == 0;
         }
+#else
+        const bool protectedPages = mprotect(insidePointer, insideBytes, nativeProtection) == 0;
 #endif
         if (!protectedPages) throw std::system_error(errno, std::generic_category(), "mprotect failed");
         if (inside != requested) RecordProtection(requestedPointer, static_cast<std::size_t>(inside - requested), prot);
