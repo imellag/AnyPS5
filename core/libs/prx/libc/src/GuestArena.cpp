@@ -509,6 +509,9 @@ void GuestArenaSetProtection_nid_postfix(std::uintptr_t address, std::size_t byt
     if (!Arena::Get().Contains(reinterpret_cast<void*>(address), bytes)) throw OutsideArena("set protection", reinterpret_cast<void*>(address), bytes);
     if (mprotect(reinterpret_cast<void*>(address), bytes, PosixProtection(protection)) != 0)
         throw std::system_error(errno, std::generic_category(), "guest arena protection failed");
+#ifdef __APPLE__
+    GuestWriteWatch::GuestWriteWatchProtectionChanged_nid_postfix(reinterpret_cast<const void*>(address), bytes, PosixProtection(protection));
+#endif
     noteAccess(reinterpret_cast<const void*>(address), bytes);
 }
 
