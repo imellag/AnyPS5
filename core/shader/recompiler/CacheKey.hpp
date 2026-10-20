@@ -288,6 +288,7 @@ private:
         append(key, value.spannedWaves);
         append(key, value.robustBufferAccess2);
         append(key, value.float32FlushToZero);
+        append(key, value.fusedExactArithmetic);
     }
 };
 
