@@ -33,8 +33,10 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/Attr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/Thread.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/Tsd.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/GuestTlsMacOs.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/Rwlock.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/Sem.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/src/MainThreadMacOs.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/Posix/Atfork.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/Posix/Attr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Pthread/Posix/Barrier.cpp
@@ -67,6 +69,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Process.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Sandbox.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/HostCpu.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/System/src/MimallocMacOs.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SystemConfiguration.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Login.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SoftwareVersion.cpp
@@ -84,6 +87,9 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/AppMetadata/src/ParamJsonParser.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/AppMetadata/src/ParamSfoParser.cpp
 )
+if(APPLE)
+    target_link_libraries(libkernel PRIVATE "-framework CoreFoundation")
+endif()
 
 target_include_directories(libkernel PRIVATE ${LIBS_INCLUDE_DIR})
 target_include_directories(libkernel PRIVATE ${LIBS_INCLUDE_DIR}/nid/include)
@@ -245,7 +251,7 @@ if(BUILD_TESTING)
     configure_windows_unwind(guest_module_fixture)
     set_target_properties(guest_module_fixture PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")
     if(Python3_Interpreter_FOUND)
-        if(NOT WIN32)
+        if(NOT WIN32 AND NOT APPLE)
             target_link_options(guest_module_fixture PRIVATE -Wl,--no-as-needed)
             add_test(NAME nid_patcher_dynamic_strings COMMAND ${Python3_EXECUTABLE}
                 ${LIBS_INCLUDE_DIR}/nid/tests/test_dynamic_strings.py $<TARGET_FILE:guest_module_fixture>)
@@ -565,15 +571,17 @@ if(BUILD_TESTING)
         set_tests_properties(guest_kernel_stack_protect PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
-    add_test_executable(guest_tls_get_addr_tests ${LIBS_INCLUDE_DIR}/tests/GuestTlsGetAddr.cpp)
-    target_include_directories(guest_tls_get_addr_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_tls_get_addr_tests PRIVATE libkernel libc)
-    configure_windows_unwind(guest_tls_get_addr_tests)
-    add_test(NAME guest_tls_get_addr COMMAND guest_tls_get_addr_tests)
-    set_tests_properties(guest_tls_get_addr PROPERTIES TIMEOUT 20)
-    if(WIN32)
-        set_tests_properties(guest_tls_get_addr PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test_executable(guest_tls_get_addr_tests ${LIBS_INCLUDE_DIR}/tests/GuestTlsGetAddr.cpp)
+        target_include_directories(guest_tls_get_addr_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_tls_get_addr_tests PRIVATE libkernel libc)
+        configure_windows_unwind(guest_tls_get_addr_tests)
+        add_test(NAME guest_tls_get_addr COMMAND guest_tls_get_addr_tests)
+        set_tests_properties(guest_tls_get_addr PROPERTIES TIMEOUT 20)
+        if(WIN32)
+            set_tests_properties(guest_tls_get_addr PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+        endif()
     endif()
     add_test_executable(guest_thread_self_tests ${LIBS_INCLUDE_DIR}/tests/GuestThreadSelf.cpp)
     target_include_directories(guest_thread_self_tests PRIVATE ${LIBS_INCLUDE_DIR})
@@ -1399,6 +1407,18 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_system_configuration PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+    if(APPLE AND TARGET mimalloc)
+        add_test_executable(mimalloc_restart_tests ${LIBS_INCLUDE_DIR}/tests/MimallocRestart.cpp)
+        target_link_libraries(mimalloc_restart_tests PRIVATE libkernel libc)
+        add_custom_command(TARGET mimalloc_restart_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:mimalloc> $<TARGET_FILE_DIR:libkernel>/libmimalloc.dylib)
+        add_test(NAME mimalloc_restart_off COMMAND mimalloc_restart_tests off)
+        set_tests_properties(mimalloc_restart_off PROPERTIES ENVIRONMENT_MODIFICATION "APS5_MIMALLOC=unset:")
+        add_test(NAME mimalloc_restart_on COMMAND mimalloc_restart_tests on)
+        set_tests_properties(mimalloc_restart_on PROPERTIES ENVIRONMENT "APS5_MIMALLOC=1")
+        add_test(NAME mimalloc_restart_once COMMAND mimalloc_restart_tests once)
+        set_tests_properties(mimalloc_restart_once PROPERTIES ENVIRONMENT "APS5_MIMALLOC=1;APS5_MIMALLOC_RESTARTED=1")
     endif()
     add_test_executable(guest_software_version_tests ${LIBS_INCLUDE_DIR}/tests/GuestSoftwareVersion.cpp)
     target_include_directories(guest_software_version_tests PRIVATE ${LIBS_INCLUDE_DIR})

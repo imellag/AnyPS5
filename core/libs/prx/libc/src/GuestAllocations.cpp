@@ -23,9 +23,17 @@
 #include <sstream>
 #include <system_error>
 #include <vector>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#else
 #include <link.h>
+#endif
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
 #endif
 
 namespace GuestAllocations {
@@ -95,7 +103,7 @@ void recordChange(void* mutation, const void* pointer, std::size_t bytes) {
     if (mutation != nullptr && bytes != 0) static_cast<MutationState*>(mutation)->changed.emplace_back(reinterpret_cast<std::uintptr_t>(pointer), bytes);
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
 std::vector<std::pair<std::uintptr_t, std::size_t>> fileBackedWritableImage() {
     const auto image = std::filesystem::read_symlink("/proc/self/exe").string();
     std::ifstream maps("/proc/self/maps");
@@ -272,6 +280,38 @@ struct ImagePages {
     std::map<std::uint64_t, Page> pages;
 };
 
+#ifdef __APPLE__
+void addSegmentPages(ImagePages& collected, std::uintptr_t address, std::uint64_t bytes, bool readable, bool writable) {
+    const auto start = address & ~(collected.pageSize - 1);
+    const auto end = (address + bytes + collected.pageSize - 1) & ~(collected.pageSize - 1);
+    for (auto page = start; page < end; page += collected.pageSize) {
+        auto& entry = collected.pages[page];
+        entry.readable = entry.readable || readable;
+        entry.writable = entry.writable || writable;
+    }
+}
+
+void collectMachImagePages(ImagePages& collected) {
+    const auto count = _dyld_image_count();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
+        if (header == nullptr || header->magic != MH_MAGIC_64) continue;
+        if (collected.main ? header->filetype != MH_EXECUTE : reinterpret_cast<std::uintptr_t>(header) != collected.base) continue;
+        collected.found = true;
+        const auto slide = static_cast<std::uintptr_t>(_dyld_get_image_vmaddr_slide(index));
+        const auto* command = reinterpret_cast<const load_command*>(header + 1);
+        for (std::uint32_t loaded = 0; loaded < header->ncmds; ++loaded) {
+            if (command->cmd == LC_SEGMENT_64) {
+                const auto& segment = *reinterpret_cast<const segment_command_64*>(command);
+                if (segment.vmsize != 0 && segment.initprot != VM_PROT_NONE)
+                    addSegmentPages(collected, slide + segment.vmaddr, segment.vmsize, (segment.initprot & (VM_PROT_READ | VM_PROT_WRITE)) != 0, (segment.initprot & VM_PROT_WRITE) != 0);
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+        }
+        return;
+    }
+}
+#else
 int collectImagePages(dl_phdr_info* image, std::size_t, void* data) {
     auto& collected = *static_cast<ImagePages*>(data);
     if (!collected.main && image->dlpi_addr != collected.base) return 0;
@@ -289,6 +329,7 @@ int collectImagePages(dl_phdr_info* image, std::size_t, void* data) {
     }
     return 1;
 }
+#endif
 
 std::uintptr_t registerImagePages(const ImagePages& collected) {
     auto& state = registry();
@@ -318,7 +359,11 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
     auto& state = registry();
     if (state.mainImageRegistered) return;
     ImagePages collected{.main = true, .pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE))};
+#ifdef __APPLE__
+    collectMachImagePages(collected);
+#else
     dl_iterate_phdr(collectImagePages, &collected);
+#endif
     require(!collected.pages.empty(), "main guest image has no loadable segments");
     registerImagePages(collected);
     state.mainImageRegistered = true;
@@ -330,7 +375,11 @@ void GuestAllocationsRegisterImage_nid_postfix(void*, const void* image) {
     const auto base = reinterpret_cast<std::uintptr_t>(image);
     if (state.registeredImages.contains(base)) return;
     ImagePages collected{.base = base, .pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE))};
+#ifdef __APPLE__
+    collectMachImagePages(collected);
+#else
     dl_iterate_phdr(collectImagePages, &collected);
+#endif
     require(collected.found, "cannot locate a guest image");
     require(!collected.pages.empty(), "guest image has no loadable segments");
     require(collected.pages.begin()->first == base, "guest image does not start at its base");
@@ -476,6 +525,52 @@ bool GuestAllocationsForRegistered_nid_postfix(void*, const void* pointer, std::
     }
     if (any) visit(reinterpret_cast<const void*>(first), last - first);
     return any;
+}
+
+void GuestAllocationsGuestPages_nid_postfix(std::uintptr_t address, std::size_t bytes, std::size_t page, std::uintptr_t* first, std::uintptr_t* end) {
+    std::uintptr_t bias = 0;
+#ifdef __APPLE__
+    struct Search {
+        std::uintptr_t address;
+        std::uintptr_t hostPage;
+        std::uintptr_t bias;
+    } search{address, static_cast<std::uintptr_t>(::sysconf(_SC_PAGESIZE)), 0};
+    dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+        auto& found = *static_cast<Search*>(data);
+        for (unsigned index = 0; index < image->dlpi_phnum; ++index) {
+            const auto& header = image->dlpi_phdr[index];
+            const auto segment = static_cast<std::uintptr_t>(image->dlpi_addr + header.p_vaddr);
+            const auto start = segment & ~(found.hostPage - 1);
+            const auto finish = (segment + header.p_memsz + found.hostPage - 1) & ~(found.hostPage - 1);
+            if (header.p_type == PT_LOAD && found.address >= start && found.address < finish) {
+                found.bias = static_cast<std::uintptr_t>(image->dlpi_addr);
+                return 1;
+            }
+        }
+        return 0;
+    }, &search);
+    bias = search.bias;
+#endif
+    const auto mask = static_cast<std::uintptr_t>(page - 1);
+    *first = bias + ((address - bias) & ~mask);
+    *end = bias + ((address + bytes - bias + mask) & ~mask);
+}
+
+void GuestAllocationsTrimToRegistered_nid_postfix(void*, std::size_t page, const void** pointer, std::size_t* bytes) {
+#ifdef __APPLE__
+    auto start = reinterpret_cast<std::uintptr_t>(*pointer);
+    const auto end = start + *bytes;
+    const auto& ranges = registry().ranges;
+    const auto following = ranges.upper_bound(start);
+    const bool startCovered = following != ranges.begin() && std::prev(following)->first + std::prev(following)->second->bytes > start;
+    if (!startCovered && following != ranges.end() && following->first < end && following->first - start < page) start = following->first;
+    *pointer = reinterpret_cast<const void*>(start);
+    *bytes = end - start;
+#else
+    static_cast<void>(page);
+    static_cast<void>(pointer);
+    static_cast<void>(bytes);
+#endif
 }
 
 bool GuestAllocationsCovers_nid_postfix(void*, const void* pointer, std::size_t bytes) {

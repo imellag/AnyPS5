@@ -25,6 +25,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -851,7 +852,7 @@ private:
             const auto* imported = reinterpret_cast<const VkImportMemoryHostPointerInfoEXT*>(next);
             active->calls.push_back({imported->pHostPointer, info->allocationSize});
             if (active->onImport) {
-                auto callback = std::move(active->onImport);
+                const auto callback = std::exchange(active->onImport, nullptr);
                 callback();
             }
             if (active->failure != VK_SUCCESS) return active->failure;
@@ -2400,6 +2401,10 @@ void importedFreshTests(const Context& context) {
 }
 
 void importWatchTests() {
+#ifdef __APPLE__
+    std::cout << "host memory imports do not exist under MoltenVK: import watch not tested\n";
+    return;
+#endif
 #ifndef _WIN32
     if (!GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix()) {
         std::cout << "write watch unavailable: import watch not tested\n";

@@ -69,6 +69,13 @@ float SinhfExpm1(float x) {
     return (oneMinusTwoPowMinusK - (e - x)) * twoPowK;
 }
 
+volatile float AcosfPio2Low = 7.5497894159e-08f;
+
+float AcosfRational(float z) {
+    constexpr float P0 = 1.6666586697e-01f, P1 = -4.2743422091e-02f, P2 = -8.6563630030e-03f, Q1 = -7.0662963390e-01f;
+    return z * (P0 + z * (P1 + z * P2)) / (1.0f + z * Q1);
+}
+
 float SinhfExp(float x) {
     constexpr float Ln2High = 6.9314575195e-01f, Ln2Low = 1.4286067653e-06f, InverseLn2 = 1.4426950216e+00f;
     constexpr float P1 = 1.6666625440e-1f, P2 = -2.7667332906e-3f;
@@ -292,6 +299,18 @@ std::int64_t APS5_VABI imaxabs_nid_postfix(std::int64_t x) {
 }
 
 float APS5_VABI fmodf_nid_postfix(float x, float y) {
+    const std::uint32_t ix = std::bit_cast<std::uint32_t>(x) & 0x7fffffffu;
+    const std::uint32_t iy = std::bit_cast<std::uint32_t>(y) & 0x7fffffffu;
+    if (iy == 0 || ix >= 0x7f800000u || iy > 0x7f800000u) {
+        errno = EDOM;
+        if (iy > 0x7f800000u) {
+            return y + y;
+        }
+        if (ix > 0x7f800000u) {
+            return x + x;
+        }
+        return (x * y) / (x * y);
+    }
     const int saved_errno = errno;
     const float result = std::fmod(x, y);
     errno = saved_errno;
@@ -310,10 +329,23 @@ float APS5_VABI acosf_nid_postfix(float x) {
     if (std::fabs(x) > 1.0f) {
         return std::bit_cast<float>(0xffc00000u);
     }
-    const int saved_errno = errno;
-    const float result = std::acos(x);
-    errno = saved_errno;
-    return result;
+    constexpr float Pi = 3.1415925026e+00f, Pio2High = 1.5707962513e+00f;
+    const std::uint32_t magnitude = std::bit_cast<std::uint32_t>(x) & 0x7fffffffu;
+    if (magnitude == 0x3f800000u) return std::signbit(x) ? Pi + 2.0f * AcosfPio2Low : 0.0f;
+    if (magnitude < 0x3f000000u) {
+        if (magnitude <= 0x32800000u) return Pio2High + AcosfPio2Low;
+        return Pio2High - (x - (AcosfPio2Low - x * AcosfRational(x * x)));
+    }
+    if (std::signbit(x)) {
+        const float z = (1.0f + x) * 0.5f;
+        const float s = std::sqrt(z);
+        return Pi - 2.0f * (s + (AcosfRational(z) * s - AcosfPio2Low));
+    }
+    const float z = (1.0f - x) * 0.5f;
+    const float s = std::sqrt(z);
+    const float high = std::bit_cast<float>(std::bit_cast<std::uint32_t>(s) & 0xfffff000u);
+    const float correction = (z - high * high) / (s + high);
+    return 2.0f * (high + (AcosfRational(z) * s + correction));
 }
 float APS5_VABI atan2f_nid_postfix(float y, float x) { return std::atan2(y, x); }
 float APS5_VABI hypotf_nid_postfix(float x, float y) { return static_cast<float>(std::hypot(static_cast<double>(x), static_cast<double>(y))); }
@@ -1126,8 +1158,20 @@ float APS5_VABI log2f_nid_postfix(float x) { return std::log2(x); }
 double APS5_VABI log10_nid_postfix(double x) { return std::log10(x); }
 float APS5_VABI ldexpf_nid_postfix(float x, int exp) { return std::ldexp(x, exp); }
 double APS5_VABI fmod_nid_postfix(double x, double y) {
-    int saved_errno = errno;
-    double result = std::fmod(x, y);
+    const std::uint64_t ix = std::bit_cast<std::uint64_t>(x) & 0x7fffffffffffffffull;
+    const std::uint64_t iy = std::bit_cast<std::uint64_t>(y) & 0x7fffffffffffffffull;
+    if (iy == 0 || ix >= 0x7ff0000000000000ull || iy > 0x7ff0000000000000ull) {
+        errno = EDOM;
+        if (iy > 0x7ff0000000000000ull) {
+            return y + y;
+        }
+        if (ix > 0x7ff0000000000000ull) {
+            return x + x;
+        }
+        return (x * y) / (x * y);
+    }
+    const int saved_errno = errno;
+    const double result = std::fmod(x, y);
     errno = saved_errno;
     return result;
 }
