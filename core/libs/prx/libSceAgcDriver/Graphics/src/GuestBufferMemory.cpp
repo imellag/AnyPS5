@@ -21,9 +21,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
-#ifdef __linux__
 #include <linux/udmabuf.h>
-#endif
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -533,7 +531,7 @@ const char* createHostPointerImport(const Context& context, HostImport& entry, V
     return bindImport(context, entry, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, &import, pointer.memoryTypeBits, allocated, failure);
 }
 
-#ifdef __linux__
+#ifndef _WIN32
 int udmabufDevice() {
     static const int device = [] {
         const int result = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
@@ -575,7 +573,7 @@ const char* createDmaBufImport(const Context& context, HostImport& entry, int fi
 }
 #endif
 
-#ifdef __linux__
+#ifndef _WIN32
 constexpr std::uint64_t ImportChunkBytes = std::uint64_t{64} << 20u;
 constexpr VkBufferUsageFlags ChunkImportUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 constexpr std::uint64_t SparseBlockBytes = 65536;
@@ -818,7 +816,7 @@ bool createSparseDmaBufImport(const Context& context, HostImport& entry, int fil
 }
 #endif
 
-#ifdef __linux__
+#ifndef _WIN32
 struct BackingFile {
     BackingFile() = default;
     BackingFile(const BackingFile&) = delete;
@@ -845,7 +843,7 @@ const char* createBackingImport(const Context& context, HostImport& entry, Backi
 
 const char* createImport(const Context& context, HostImport& entry, VkResult& failure) {
     const char* step = createHostPointerImport(context, entry, failure);
-#ifdef __linux__
+#ifndef _WIN32
     BackingFile backing;
     if (step != nullptr && sharedBacking(context, entry, backing)) step = createBackingImport(context, entry, backing, failure);
 #endif
@@ -1973,7 +1971,7 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
 #endif
         return step == nullptr;
     }, watchedHostPointer);
-#ifdef __linux__
+#ifndef _WIN32
     if (BackingFile backing; step != nullptr && watchedDmaBuf != watchedHostPointer && sharedBacking(context, entry, backing)) {
         GuestMemory::ImportWatched(base, bytes, [&] {
             step = createBackingImport(context, entry, backing, result);
@@ -3655,10 +3653,6 @@ ImportProbe ProbeDmaBufImportWriteProtection(const Context& context) {
 #ifdef _WIN32
     static_cast<void>(context);
     probe.failure = "the Linux write watch";
-    return probe;
-#elif !defined(__linux__)
-    static_cast<void>(context);
-    probe.failure = "dma-buf import support";
     return probe;
 #else
     if (!context.dmaBufImport) {
