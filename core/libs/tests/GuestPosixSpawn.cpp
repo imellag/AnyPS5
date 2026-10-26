@@ -21,7 +21,7 @@
 extern "C" int kill(int, int);
 #endif
 
-#ifndef _WIN32
+#if defined(__linux__)
 extern char** environ;
 #endif
 
