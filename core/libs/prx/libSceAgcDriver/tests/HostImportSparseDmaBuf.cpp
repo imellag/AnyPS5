@@ -1,7 +1,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
-#ifdef __linux__
+#ifndef _WIN32
 #include "prx/libc/include/GuestArena.hpp"
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -20,7 +20,7 @@
 #include <string_view>
 #include <vector>
 
-#ifndef __linux__
+#ifdef _WIN32
 int main() {
     std::printf("skipped, udmabuf imports are Linux only\n");
     return 77;
