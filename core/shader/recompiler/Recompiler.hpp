@@ -177,6 +177,13 @@ struct TargetMerge {
     bool operator==(const TargetMerge&) const = default;
 };
 
+struct DepthBoundsDiscard {
+    bool enabled = false;
+    std::array<std::uint32_t, 8> descriptor{};
+
+    bool operator==(const DepthBoundsDiscard&) const = default;
+};
+
 struct ShaderPixelStageInfo {
     std::uint32_t interpolatorCount;
     std::array<std::uint32_t, 32> interpolatorSettings;
@@ -222,6 +229,7 @@ struct ShaderPixelStageInfo {
     std::array<std::uint8_t, 32> sampleLocations{};
     TargetMerge targetMerge{};
     std::array<std::uint32_t, 4> sampleOrder{};
+    DepthBoundsDiscard depthBoundsDiscard{};
 };
 
 struct ShaderVertexBufferResource {
@@ -747,6 +755,7 @@ struct CompiledShaderArtifact {
     bool stencilReplaySafe = false;
     bool bdaWrites = false;
     std::uint32_t stencilReferenceDword = 0xffffffffu;
+    std::uint32_t depthBoundsDword = 0xffffffffu;
     std::uint64_t variantId = 0;
 };
 
