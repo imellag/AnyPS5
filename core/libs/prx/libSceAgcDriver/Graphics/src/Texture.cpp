@@ -4558,6 +4558,27 @@ void StorageTexture::StoreReadbackBeforeLabel(const char* reason) {
     for (const auto& [address, bytes] : ranges) static_cast<void>(FlushPending(address, bytes, nullptr, reason));
 }
 
+bool StorageTexture::StoreReadbackAtCompletion(Recorder& recorder, const char* reason) {
+    static const bool disabled = std::getenv("APS5_NO_LABEL_READBACK_STORE") != nullptr || std::getenv("APS5_NO_LABEL_READBACK_AT_COMPLETION") != nullptr;
+    if (disabled || Recorder::InCompletion()) return false;
+    std::vector<std::pair<std::uint64_t, std::size_t>> ranges;
+    {
+        auto& pending = Pending();
+        std::lock_guard lock(pending.mutex);
+        for (const auto* texture : pending.textures) {
+            if (texture->descriptor.tileMode == TextureTileMode::kLinear || texture->guestBytes <= SmallStoreBytes) ranges.emplace_back(texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes));
+        }
+    }
+    if (ranges.empty()) return false;
+    for (const auto& [address, bytes] : ranges) {
+        if (recorder.PendingWriterSerial(address, bytes) != recorder.OpenSerial()) return false;
+    }
+    recorder.OnComplete([ranges = std::move(ranges), reason] {
+        for (const auto& [address, bytes] : ranges) static_cast<void>(FlushPending(address, bytes, nullptr, reason));
+    });
+    return true;
+}
+
 std::size_t StorageTexture::StoreDrawnLinear(const char* reason) {
     auto& pending = Pending();
     if (pending.drawnCount.load(std::memory_order_acquire) == 0 || Recorder::InCompletion()) return 0;
