@@ -2510,10 +2510,6 @@ int VulkanDevice::WriteLabelOnGpu(std::uint64_t address, std::span<const std::by
     static const bool storeAtLabel = Graphics::StorageTexture::StoreAtLabelRequested(std::getenv("APS5_STORE_AT_LABEL"));
     if (storeAtLabel) Graphics::StorageTexture::FlushAllPending("label");
     if (queue == 0) static_cast<void>(Graphics::StorageTexture::StoreDrawnLinear("label"));
-    if (state->recorder && !bytes.empty() && bytes.size() <= 8 && address % 4 == 0 && bytes.size() % 4 == 0 && Graphics::StorageTexture::StoreReadbackAtCompletion(*state->recorder, "readback at label completion")) {
-        state->recorder->AfterCompletions(address, bytes, stamp, queue, false);
-        return 5;
-    }
     Graphics::StorageTexture::StoreReadbackBeforeLabel("readback before label");
     if (!state->recorder || bytes.empty() || bytes.size() > 65536 || address % 4 != 0 || bytes.size() % 4 != 0) return 4;
     auto& recorder = *state->recorder;
