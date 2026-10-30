@@ -1275,7 +1275,7 @@ int DoMapFileBacked_nid_no_patch(void** addr, size_t len, int prot, int flags, i
     static_cast<void>(offset);
     static_cast<void>(alignment);
     throw std::system_error(ENOTSUP, std::generic_category(), "file-backed guest mmap is not supported in WebAssembly");
-#else
+#elif defined(_WIN32)
     if ((flags & 3) != 1) throw std::system_error(ENOTSUP, std::generic_category(), "map file: a private file mapping is not mapped from the file on Windows");
     const HANDLE file = WindowsDescriptorHandle_nid_no_patch(descriptor);
     LARGE_INTEGER fileBytes{};
