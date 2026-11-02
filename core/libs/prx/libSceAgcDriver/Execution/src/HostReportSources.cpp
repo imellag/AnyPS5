@@ -13,6 +13,9 @@
 #else
 #include <cerrno>
 #include <sys/utsname.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -119,6 +122,8 @@ std::vector<std::string> environmentEntries() {
     std::vector<std::string> entries;
 #ifdef _WIN32
     char** variables = _environ;
+#elif defined(__APPLE__)
+    char** variables = *_NSGetEnviron();
 #else
     char** variables = environ;
 #endif
