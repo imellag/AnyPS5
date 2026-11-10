@@ -91,6 +91,7 @@ std::size_t CellPixel(std::uint32_t triangle) {
 
 alignas(256) std::array<Vertex, 3 * Triangles> Scrambled{};
 alignas(256) std::array<std::uint16_t, 3 * Triangles> Indices{};
+alignas(256) std::array<std::uint16_t, 3 * Triangles> ListRestart{};
 alignas(256) std::array<Vertex, 3 * Triangles> Ordered{};
 constexpr std::uint32_t WideFastLaunchSkipped = 65535;
 alignas(256) std::array<Vertex, 3 * (WideFastLaunchSkipped + Triangles)> WideFastLaunch{};
@@ -406,6 +407,22 @@ int main() {
             if (!fastLaunchIndexedRefused) throw;
         }
         Require(fastLaunchIndexedRefused, "an indexed fast-launch draw was drawn");
+
+        for (const auto& [name, subgroup] : {std::pair{"one-wave subgroups", SmallSubgroup}, std::pair{"two-wave subgroups", WideSubgroup}}) {
+            ClearPixels();
+            DrawMesh(device, {subgroup, {reinterpret_cast<std::uintptr_t>(Indices.data()), static_cast<std::uint32_t>(Indices.size()), 2, 1, 0, true}, VertexBufferDescriptor(Scrambled.data(), static_cast<std::uint32_t>(Scrambled.size())), ShaderRecompiler::MeshDrawPushOffsetBytes, true});
+            CheckTriangles((std::string("indexed triangle list with restart enabled and no restart index, ") + name).c_str());
+        }
+        std::copy(Indices.begin(), Indices.end(), ListRestart.begin());
+        ListRestart[3u * (Triangles / 2u) + 1u] = 0xffffu;
+        bool listRestartRefused = false;
+        try {
+            DrawMesh(device, {WideSubgroup, {reinterpret_cast<std::uintptr_t>(ListRestart.data()), static_cast<std::uint32_t>(ListRestart.size()), 2, 1, 0, true}, VertexBufferDescriptor(Scrambled.data(), static_cast<std::uint32_t>(Scrambled.size())), ShaderRecompiler::MeshDrawPushOffsetBytes, true});
+        } catch (const std::runtime_error& error) {
+            listRestartRefused = std::string(error.what()).find("a restart index inside a mesh list draw is unsupported") != std::string::npos;
+            if (!listRestartRefused) throw;
+        }
+        Require(listRestartRefused, "a mesh triangle list holding a restart index was drawn");
 
         for (const bool indexed : {true, false}) {
             ClearPixels();

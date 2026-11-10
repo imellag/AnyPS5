@@ -1883,8 +1883,7 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
         inputs.indexOffset = 0;
         inputs.expandedIndexCount = outputIndexCount;
         inputs.indices = std::move(indexCopy);
-    } else if (draw.indexed && state.primitiveRestart && !context.primitiveListRestart && (state.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)) {
-        Require(!state.stages.mesh, "AGC graphics: primitive restart in a mesh list draw needs VK_EXT_primitive_topology_list_restart");
+    } else if (draw.indexed && state.primitiveRestart && !context.primitiveListRestart && !state.stages.mesh && (state.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)) {
         if (indexBytes == 0) {
             inputs.nothing = true;
             return inputs;
@@ -1916,7 +1915,8 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
         inputs.indexOffset = 0;
     } else if (draw.indexed) {
         const bool listTopology = state.topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || state.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        const bool skipRestart = state.primitiveRestart && (!listTopology || context.primitiveListRestart);
+        const bool meshList = state.stages.mesh.has_value() && listTopology;
+        const bool skipRestart = state.primitiveRestart && !meshList && (!listTopology || context.primitiveListRestart);
         const auto use = draw.indexSize == 2 ? (skipRestart ? Recorder::SnapshotUse::Index16Restart : Recorder::SnapshotUse::Index16) : (skipRestart ? Recorder::SnapshotUse::Index32Restart : Recorder::SnapshotUse::Index32);
         const auto* import = InPlaceDrawInput(context, draw.indexAddress, static_cast<std::size_t>(indexBytes), draw.indexSize);
         DrawInputCopy copy;
@@ -1955,6 +1955,7 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
                 }
             }
         }
+        Require(!meshList || !state.primitiveRestart || *highest != (draw.indexSize == 2 ? 0xffffu : 0xffffffffu), "AGC graphics: a restart index inside a mesh list draw is unsupported");
         Require(*highest <= context.limits.maxDrawIndexedIndexValue, "index exceeds the device's indexed draw limit");
         inputs.maxIndex = *highest;
         if (skipRestart && state.stages.mesh && (state.stages.mesh->inputPrimitive == 5 || state.stages.mesh->inputPrimitive == 6)) {
